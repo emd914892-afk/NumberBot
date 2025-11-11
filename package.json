@@ -1,0 +1,16 @@
+{
+  "name": "telegram-otp-bot",
+  "version": "1.0.0",
+  "description": "A Telegram Bot using Node.js, Firebase, and Vercel for OTP services.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^11.5.0",
+    "node-telegram-bot-api": "^0.61.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
