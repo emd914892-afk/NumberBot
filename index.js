@@ -1,10 +1,17 @@
-// Vercel deployment and Firebase Admin SDK setup for the Telegram Bot
+/**
+ * Telegram OTP/Virtual Number Bot
+ * Deployed on Vercel using Webhook and integrated with Firebase Realtime Database (Admin SDK).
+ * * USER CREDENTIALS (Must be set as Vercel Environment Variables):
+ * BOT_TOKEN: 8531791297:AAGl4Rdj2pA3FhsO4tLIGcufxJDVUPyyWNs
+ * ADMIN_ID: 7895816348
+ * FIREBASE_SERVICE_ACCOUNT: (The provided large JSON block)
+ */
 
 const TelegramBot = require('node-telegram-bot-api');
 const admin = require('firebase-admin');
 
 // ------------------------------------------------
-// ১. Vercel এনভায়রনমেন্ট ভেরিয়েবল থেকে তথ্য সংগ্রহ
+// 1. ENVIRONMENT VARIABLE SETUP
 // ------------------------------------------------
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_ID = process.env.ADMIN_ID; 
@@ -13,6 +20,7 @@ const FIREBASE_DATABASE_URL = "https://numberbot-default-rtdb.asia-southeast1.fi
 
 let serviceAccount;
 try {
+    // Safely parse the JSON string from Vercel's environment variable
     serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT); 
 } catch (e) {
     console.error("FIREBASE_SERVICE_ACCOUNT environment variable is missing or malformed JSON.");
@@ -20,98 +28,145 @@ try {
 
 
 // ------------------------------------------------
-// ২. Firebase ইনিশিয়ালাইজেশন
+// 2. FIREBASE INITIALIZATION (Admin SDK)
 // ------------------------------------------------
-if (serviceAccount && !admin.apps.length) { // Ensures initialization happens only once
+if (serviceAccount && !admin.apps.length) { 
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
         databaseURL: FIREBASE_DATABASE_URL
     });
-    console.log("Firebase Admin SDK initialized.");
-} else if (admin.apps.length) {
-    console.log("Firebase Admin SDK already initialized.");
+    console.log("Firebase Admin SDK initialized successfully.");
+} else if (!admin.apps.length) {
+    console.error("Firebase initialization failed due to missing service account data.");
 }
 
 const db = admin.database();
-const numbersRef = db.ref('available_numbers'); // নম্বর সংরক্ষণের জন্য রেফারেন্স
+const numbersRef = db.ref('available_numbers'); // Reference for storing numbers
 
 // ------------------------------------------------
-// ৩. টেলিগ্রাম বট সেটআপ (Webhook মোড)
+// 3. TELEGRAM BOT SETUP (Webhook Mode)
 // ------------------------------------------------
 const bot = new TelegramBot(token);
 
 // ===============================================
-// ৪. মূল ইন্টারফেস বাটন কাঠামো
+// 4. MAIN INTERFACE KEYBOARD STRUCTURE
 // ===============================================
 
 const mainKeyboard = {
     reply_markup: {
         inline_keyboard: [
+            // Row 1: Get 2FA (Full width)
             [{ text: "🔑 Get 2FA", callback_data: "get_2fa" }],
+            
+            // Row 2: Get Number (Left) | Status (Right)
             [{ text: "📞 Get Number", callback_data: "get_number" }, { text: "📊 Status", callback_data: "status" }],
+            
+            // Row 3: Active Country (Left) | Temp Mail (Right)
             [{ text: "🌍 Active Country", callback_data: "active_country" }, { text: "📧 Temp Mail", callback_data: "temp_mail" }],
+            
+            // Row 4: Support (Full width)
             [{ text: "🙋 Support", callback_data: "support" }]
         ]
     }
 };
 
 // ===============================================
-// ৫. বাটন হ্যান্ডলার ফাংশন (প্রতিটি বাটনের জন্য আলাদা কাঠামো)
+// 5. BUTTON HANDLER FUNCTIONS
 // ===============================================
 
-/** Handles the "Get Number" button click. This will be complex, handling country selection and number assignment. */
+/** Fetches available countries from Firebase and sends a dynamic keyboard for selection. */
 async function handleGetNumber(chatId, messageId) {
-    const responseText = "📞 **নম্বর পেতে:** অনুগ্রহ করে নিচের তালিকা থেকে আপনার কাঙ্ক্ষিত দেশ নির্বাচন করুন।";
+    const responseText = "📞 **Get Number:** Please select your desired country from the list below.";
     
-    // TODO: এখানে Firebase থেকে দেশের তালিকা লোড করে ডায়নামিক বাটন তৈরি করতে হবে
-    const countrySelectionKeyboard = {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: "Egypt 🇪🇬", callback_data: "select_country_Egypt" }],
-                [{ text: "Nepal 🇳🇵", callback_data: "select_country_Nepal" }],
-                [{ text: "« মূল মেনুতে ফিরে যান", callback_data: "start_menu" }]
-            ]
+    try {
+        const snapshot = await numbersRef.once('value');
+        const numbers = snapshot.val();
+        
+        if (!numbers) {
+            return bot.sendMessage(chatId, "No numbers are currently available.");
         }
-    };
 
-    // Replace the message with new options (optional, but cleaner UX)
-    bot.editMessageText(responseText, {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: countrySelectionKeyboard.reply_markup,
-        parse_mode: 'Markdown'
-    });
+        const availableCountries = {};
+        for (const key in numbers) {
+            const num = numbers[key];
+            if (num && num.status === 'available' && num.country) {
+                availableCountries[num.country] = true;
+            }
+        }
+
+        const countryButtons = Object.keys(availableCountries)
+            .sort()
+            .map(country => [{ 
+                text: country, 
+                callback_data: `select_country_${country.replace(/\s/g, '')}` 
+            }]);
+        
+        // Add back button
+        countryButtons.push([{ text: "« Back to Main Menu", callback_data: "start_menu" }]);
+
+        const countrySelectionKeyboard = {
+            reply_markup: { inline_keyboard: countryButtons }
+        };
+
+        // Edit the message to show country options
+        bot.editMessageText(responseText, {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: countrySelectionKeyboard.reply_markup,
+            parse_mode: 'Markdown'
+        });
+
+    } catch (error) {
+        console.error("Error fetching countries for Get Number:", error);
+        bot.sendMessage(chatId, "A system error occurred while loading countries.");
+    }
 }
 
-/** Handles the "Active Country" button click. Loads available number counts from Firebase. */
+/** Fetches available number counts and lists them. */
 async function handleActiveCountry(chatId) {
     try {
         const snapshot = await numbersRef.once('value');
         const numbers = snapshot.val();
         
-        // Logic for counting available countries (Same as before)
-        // ... (You can copy the previous successful logic here) ...
-        
-        let countryList = "🌍 **সক্রিয় দেশের তালিকা:**\n\n";
-        // DUMMY LIST for demonstration:
-        countryList += "▪️ Sudan: 50টি নম্বর উপলব্ধ\n";
-        countryList += "▪️ Zambia: 32টি নম্বর উপলব্ধ\n";
+        if (!numbers) {
+            return "🌍 Sorry, no countries are currently active.";
+        }
 
+        const countryCounts = {};
+        
+        for (const key in numbers) {
+            const number = numbers[key];
+            if (number && number.status === 'available') { 
+                const country = number.country;
+                countryCounts[country] = (countryCounts[country] || 0) + 1;
+            }
+        }
+
+        let countryList = "🌍 **List of Active Countries:**\n\n";
+        
+        if (Object.keys(countryCounts).length === 0) {
+            countryList += "No numbers are currently available.";
+        } else {
+            const sortedCountries = Object.keys(countryCounts).sort();
+            sortedCountries.forEach(country => {
+                countryList += `▪️ ${country}: ${countryCounts[country]} numbers available\n`;
+            });
+        }
         return countryList;
 
     } catch (error) {
-        console.error("Firebase ডেটা লোড ত্রুটি:", error);
-        return "ডাটাবেস থেকে তথ্য আনতে সমস্যা হয়েছে।";
+        console.error("Firebase data loading error:", error);
+        return "Failed to retrieve information from the database.";
     }
 }
 
-/** Handles the "Get 2FA", "Status", and "Temp Mail" clicks (simple response for now) */
+/** Handles the "Get 2FA", "Status", and "Temp Mail" clicks with a generic message. */
 function handleSimpleClick(data) {
-    return `আপনি ক্লিক করেছেন: *${data.toUpperCase().replace('_', ' ')}*। এই পরিষেবাটি এখনো তৈরি হচ্ছে।`;
+    return `You clicked: *${data.toUpperCase().replace('_', ' ')}*. This service is still under development.`;
 }
 
 // ------------------------------------------------
-// ৬. Webhook হ্যান্ডলিং (Vercel-এর জন্য আবশ্যক)
+// 6. WEBHOOK HANDLER (Required for Vercel)
 // ------------------------------------------------
 module.exports = async (req, res) => {
     try {
@@ -126,18 +181,18 @@ module.exports = async (req, res) => {
 };
 
 // ------------------------------------------------
-// ৭. /start কমান্ড হ্যান্ডলিং
+// 7. /start COMMAND HANDLER
 // ------------------------------------------------
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
-    const welcomeMessage = "স্বাগতম! আপনার প্রয়োজনীয় পরিষেবা নির্বাচন করুন:";
+    const welcomeMessage = "Welcome! Please select your required service:";
     
     bot.sendMessage(chatId, welcomeMessage, mainKeyboard);
 });
 
 
 // ------------------------------------------------
-// ৮. বাটন প্রেস হ্যান্ডলিং (Callback Query)
+// 8. CALLBACK QUERY HANDLER (Button Clicks)
 // ------------------------------------------------
 bot.on('callback_query', async (callbackQuery) => {
     const message = callbackQuery.message;
@@ -145,23 +200,23 @@ bot.on('callback_query', async (callbackQuery) => {
     const chatId = message.chat.id;
     const messageId = message.message_id;
 
-    await bot.answerCallbackQuery(callbackQuery.id); // ক্লিক নোটিফিকেশন বন্ধ করা
+    await bot.answerCallbackQuery(callbackQuery.id); 
 
     try {
         let responseText = null;
 
         if (data === 'get_number') {
-            await handleGetNumber(chatId, messageId); // Call dedicated function
+            await handleGetNumber(chatId, messageId); 
             return; 
         } else if (data === 'active_country') {
-            responseText = await handleActiveCountry(chatId); // Call dedicated function
+            responseText = await handleActiveCountry(chatId); 
         } else if (data === 'support') {
-            responseText = "🙋 সাপোর্টের জন্য: @YourAdminUsername";
+            responseText = "🙋 For support: @YourAdminUsername";
         } else if (['get_2fa', 'status', 'temp_mail'].includes(data)) {
             responseText = handleSimpleClick(data);
         } else if (data === 'start_menu') {
              // Return to main menu if coming from a nested menu
-             const welcomeMessage = "আপনি মূল মেনুতে ফিরে এসেছেন। আপনার প্রয়োজনীয় পরিষেবা নির্বাচন করুন:";
+             const welcomeMessage = "You have returned to the main menu. Please select your required service:";
              await bot.editMessageText(welcomeMessage, {
                 chat_id: chatId,
                 message_id: messageId,
@@ -170,44 +225,43 @@ bot.on('callback_query', async (callbackQuery) => {
             });
             return;
         } else if (data.startsWith('select_country_')) {
-            // TODO: Here you will handle the final selection of a country.
-             responseText = `আপনি নির্বাচন করেছেন: ${data.split('_')[2]}। এখন সার্ভিস নির্বাচন করুন।`;
+            // Further logic for selecting the service (Wp/Fb/Ig/Gm) would go here
+             responseText = `You selected: ${data.split('_')[2].replace(/([A-Z])/g, ' $1').trim()}. Now please select the service.`;
         }
 
         if (responseText) {
-            // Send the response if it's not handled by editMessageText
             bot.sendMessage(chatId, responseText, { parse_mode: 'Markdown' });
         }
         
     } catch (error) {
-        console.error("Callback Query ত্রুটি:", error);
-        bot.sendMessage(chatId, "একটি সিস্টেম ত্রুটি ঘটেছে।");
+        console.error("Callback Query Error:", error);
+        bot.sendMessage(chatId, "A system error occurred.");
     }
 });
 
 
 // ------------------------------------------------
-// ৯. /bulkadd অ্যাডমিন কমান্ড (বাল্ক ডেটা ইনপুট)
+// 9. /bulkadd ADMIN COMMAND (Bulk Data Input)
 // ------------------------------------------------
 bot.onText(/\/bulkadd (.+)/s, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id.toString(); 
 
-    // অ্যাডমিন যাচাই
+    // Admin verification
     if (!ADMIN_ID || userId !== ADMIN_ID) {
-        return bot.sendMessage(chatId, "অনুমতি নেই।");
+        return bot.sendMessage(chatId, "Permission denied.");
     }
 
     const inputData = match[1].trim(); 
     
     if (!inputData) {
-        return bot.sendMessage(chatId, "ফরম্যাট ভুল। অনুগ্রহ করে স্প্রেডশীট থেকে ডেটা কপি করে এই ফরম্যাটে দিন:\n`CountryName, CountryCode, Service(Wp/Fb/Ig/Gm), Number`\nউদাহরণ:\n`India, +91, Wp+Tg, 9876543210\nUSA, +1, Fb+Gm, 1234567890`");
+        return bot.sendMessage(chatId, "Wrong format. Please copy and paste data from the spreadsheet using the format:\n`CountryName, CountryCode, Service(Wp/Fb/Ig/Gm), Number`\nExample:\n`India, +91, Wp+Tg, 9876543210\nUSA, +1, Fb+Gm, 1234567890`");
     }
     
     const lines = inputData.split('\n').filter(line => line.trim() !== '');
     
     if (lines.length === 0) {
-        return bot.sendMessage(chatId, "কোনো বৈধ ডেটা পাওয়া যায়নি।");
+        return bot.sendMessage(chatId, "No valid data found.");
     }
 
     const updates = {};
@@ -237,15 +291,15 @@ bot.onText(/\/bulkadd (.+)/s, async (msg, match) => {
     });
     
     if (successfulAdds === 0) {
-        return bot.sendMessage(chatId, "কোনো বৈধ লাইন প্রক্রিয়া করা সম্ভব হয়নি। ফরম্যাট চেক করুন।");
+        return bot.sendMessage(chatId, "No valid lines could be processed. Check the format.");
     }
     
     try {
         await numbersRef.update(updates); 
-        bot.sendMessage(chatId, `✅ **সফলভাবে ${successfulAdds}টি নম্বর যোগ করা হয়েছে!**\n\n*(মোট ${lines.length}টি লাইনের মধ্যে)*`);
+        bot.sendMessage(chatId, `✅ **Successfully added ${successfulAdds} numbers!**\n\n*(Out of ${lines.length} total lines)*`);
 
     } catch (error) {
-        console.error("Firebase বাল্ক সেভ ত্রুটি:", error);
-        bot.sendMessage(chatId, "নম্বর যোগ করার সময় ত্রুটি: " + error.message);
+        console.error("Firebase Bulk Save Error:", error);
+        bot.sendMessage(chatId, "Error while adding numbers: " + error.message);
     }
 });
